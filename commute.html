@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dublin Commute</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#3498db">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<style>
+  body { font-family: Arial, sans-serif; padding: 15px; background: #f5f5f5; }
+  h2 { text-align: center; color: #2c3e50; }
+  .inputs { display: flex; justify-content: space-between; margin-bottom: 10px; }
+  input { width: 48%; padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 1rem; }
+  button { width: 100%; padding: 12px; margin-bottom: 15px; font-size: 1rem; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; }
+  button:hover { background: #2980b9; }
+  .output { border-radius: 5px; padding: 10px; margin-bottom: 10px; height: 240px; overflow-y: auto; white-space: pre-wrap; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+  .green { background-color: #c6f6d5; border-left: 5px solid #2ecc71; padding-left: 8px; }
+  .blue { background-color: #bee3f8; border-left: 5px solid #3498db; padding-left: 8px; }
+  .totals { margin-bottom: 15px; font-weight: bold; font-size: 1.1rem; text-align: center; }
+</style>
+</head>
+<body>
+
+<h2>Dublin Commute Calculator</h2>
+<div class="inputs">
+  <input id="home" type="text" placeholder="Home Eircode" value="">
+  <input id="work" type="text" placeholder="Work Eircode" value="D20 W722">
+</div>
+<button id="getRoutesBtn">Get Routes</button>
+
+<div class="totals" id="totals"></div>
+<div class="output" id="morningOutput"></div>
+<div class="output" id="eveningOutput"></div>
+
+<script>
+const WORKER_URL = "https://green-fog-b3ad.eoinol.workers.dev/";
+
+function toUnixTimestamp(date) {
+    return Math.floor(date.getTime() / 1000);
+}
+
+async function geocodeEircode(eircode) {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(eircode)}&key=AIzaSyDWQdg3HhozRSA-Zsf3psPjQl7yKn3X_0c`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!data.results || data.results.length === 0) throw new Error("Cannot geocode: " + eircode);
+    const loc = data.results[0].geometry.location;
+    return `${loc.lat},${loc.lng}`;
+}
+
+async function fetchDirections(origin, destination, mode, timeType, timestamp) {
+    const url = new URL(WORKER_URL);
+    url.searchParams.set("origin", origin);
+    url.searchParams.set("destination", destination);
+    url.searchParams.set("mode", mode);
+    url.searchParams.set("alternatives", "true");
+    url.searchParams.set(timeType, timestamp);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Directions fetch failed");
+    return await resp.json();
+}
+
+function formatDuration(seconds) {
+    const mins = Math.round(seconds / 60);
+    return `${Math.floor(mins/60)}h${mins%60}m`;
+}
+
+function formatRoute(route) {
+    const legs = route.legs;
+    const steps = legs.flatMap(leg => leg.steps.map(s => {
+        if (s.travel_mode === "WALKING") return `Walk ${s.distance.text}`;
+        if (s.travel_mode === "TRANSIT") return `Transit ${s.transit_details.line.short_name || s.transit_details.line.name}`;
+        return s.travel_mode;
+    }));
+    const depart = new Date(legs[0].departure_time.value*1000);
+    const arrive = new Date(legs[legs.length-1].arrival_time.value*1000);
+    return {
+        duration: formatDuration(legs[0].duration.value),
+        steps: steps.join(" -> "),
+        departTime: `${depart.getHours().toString().padStart(2,"0")}:${depart.getMinutes().toString().padStart(2,"0")}`,
+        arriveTime: `${arrive.getHours().toString().padStart(2,"0")}:${arrive.getMinutes().toString().padStart(2,"0")}`,
+        rawDurationSeconds: legs[0].duration.value
+    };
+}
+
+function colorRoutes(routes, type) {
+    if (!routes || routes.length === 0) return [];
+    let greenIdx, blueIdx;
+    if (type === 'morning') {
+        greenIdx = routes.reduce((iMax, r, i, arr) => {
+            const dep = new Date(r.legs[0].departure_time.value*1000); 
+            const depMax = new Date(arr[iMax].legs[0].departure_time.value*1000);
+            return dep > depMax ? i : iMax;
+        }, 0);
+    } else {
+        greenIdx = routes.reduce((iMin, r, i, arr) => {
+            const arrv = new Date(r.legs[r.legs.length-1].arrival_time.value*1000); 
+            const arrvMin = new Date(arr[iMin].legs[arr[iMin].legs.length-1].arrival_time.value*1000);
+            return arrv < arrvMin ? i : iMin;
+        }, 0);
+    }
+    blueIdx = routes.reduce((iMin, r, i, arr) => r.legs[0].duration.value < arr[iMin].legs[0].duration.value ? i : iMin, 0);
+    return routes.map((r,i) => ({
+        data: r,
+        color: i===greenIdx ? 'green' : i===blueIdx ? 'blue' : ''
+    }));
+}
+
+document.getElementById("getRoutesBtn").addEventListener("click", async () => {
+    const homeEircode = document.getElementById("home").value.trim();
+    const workEircode = document.getElementById("work").value.trim();
+    if (!homeEircode || !workEircode) {
+        alert("Please enter both Eircodes.");
+        return;
+    }
+
+    try {
+        const homeCoords = await geocodeEircode(homeEircode);
+        const workCoords = await geocodeEircode(workEircode);
+
+        const now = new Date();
+        const nextTuesday = new Date(now);
+        nextTuesday.setDate(now.getDate() + ((2 + 7 - now.getDay()) % 7 || 7));
+
+        const morningArrive = new Date(nextTuesday);
+        morningArrive.setHours(7,30,0,0);
+        const morningUnix = toUnixTimestamp(morningArrive);
+
+        const eveningDepart = new Date(nextTuesday);
+        eveningDepart.setHours(16,0,0,0);
+        const eveningUnix = toUnixTimestamp(eveningDepart);
+
+        const morningData = await fetchDirections(homeCoords, workCoords, 'transit','arrival_time', morningUnix);
+        const eveningData = await fetchDirections(workCoords, homeCoords,'transit','departure_time', eveningUnix);
+
+        const morningRoutes = colorRoutes(morningData.routes,'morning');
+        const eveningRoutes = colorRoutes(eveningData.routes,'evening');
+
+        const morningOutput = document.getElementById("morningOutput");
+        morningOutput.innerHTML = morningRoutes.map(r=>{
+            const info = formatRoute(r.data);
+            return `<div class="${r.color}">Duration: ${info.duration}\nRoute: ${info.steps}\nTimes: ${info.departTime} to ${info.arriveTime}</div>`;
+        }).join("\n\n");
+
+        const eveningOutput = document.getElementById("eveningOutput");
+        eveningOutput.innerHTML = eveningRoutes.map(r=>{
+            const info = formatRoute(r.data);
+            return `<div class="${r.color}">Duration: ${info.duration}\nRoute: ${info.steps}\nTimes: ${info.departTime} to ${info.arriveTime}</div>`;
+        }).join("\n\n");
+
+	// Totals
+	const totalDiv = document.getElementById("totals");
+
+	// Morning
+	const morningGreen = morningRoutes.find(r=>r.color==='green')?.data.legs[0].duration.value || 0;
+	const morningBlue = morningRoutes.reduce((min, r)=>Math.min(min,r.data.legs[0].duration.value), Infinity);
+
+	// Evening
+	const eveningGreen = eveningRoutes.find(r=>r.color==='green')?.data.legs[0].duration.value || 0;
+	const eveningBlue = eveningRoutes.reduce((min, r)=>Math.min(min,r.data.legs[0].duration.value), Infinity);
+
+	totalDiv.innerHTML = `Realistic commute (green): ${formatDuration(morningGreen+eveningGreen)} | Shortest commute (blue): ${formatDuration(morningBlue+eveningBlue)}`;
+
+
+    } catch(err) {
+        console.error(err);
+        alert("Error fetching routes: "+err.message);
+    }
+});
+</script>
+
+</body>
+</html>
