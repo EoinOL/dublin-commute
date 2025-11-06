@@ -93,9 +93,8 @@ function renderRoutes(routes, container, greenSelector, blueSelector) {
     const div = document.createElement('div');
     div.classList.add('route');
     div.innerHTML = `
-Duration: ${formatDuration(r.durationMinutes)}<br>
-Route: ${r.steps.join(' -> ')}<br>
-Times: ${formatTime(r.depTimestamp)} to ${formatTime(r.arrTimestamp)}
+Duration: ${formatDuration(r.durationMinutes)} - Times: ${formatTime(r.depTimestamp)} to ${formatTime(r.arrTimestamp)}<br>
+Route: ${r.steps.join(' -> ')}
     `;
     if (r.depTimestamp === greenTime || r.arrTimestamp === greenTime) div.classList.add('green');
     else if (r.durationMinutes === blueTime) div.classList.add('blue');
@@ -149,4 +148,5 @@ document.getElementById('calculateBtn').addEventListener('click', async () => {
 
 </body>
 </html>
+
 
